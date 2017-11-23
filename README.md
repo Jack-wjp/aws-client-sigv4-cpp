@@ -1,5 +1,4 @@
 # aws-client-sigv4-cpp
-# C++ implementation of AWS Signatrue V4 for signing API request and Rest API Example
 
 # C++ implementation of AWS Signatrue V4 for signing API request
 
