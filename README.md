@@ -1,17 +1,19 @@
 # aws-client-sigv4-cpp
+For this code I have used C++ POCO Library 
 
 # C++ implementation of AWS Signatrue V4 for signing API request
 
 awssigv4.cpp
 awssigv4.h
 
-Note: I have taken the code from https://github.com/harendra247/aws-sigv4-cpp and enhanced to implementation of Client for AWS S3
+Note: I have taken the code from https://github.com/harendra247/aws-sigv4-cpp and enhanced to implement Client for AWS S3
 
 # C++ implementation of Client for AWS S3 using AWS Signatrue V4 API requests
 
 awsClient.cpp
 awsClient.h
 
+# Prerequisite 
 To run the test cases following parameters needs to be configured.
 Region needs to be configured to run the test i.e.: ap-south-1
 Secret Key needs to be configured to run the test i.e.: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
