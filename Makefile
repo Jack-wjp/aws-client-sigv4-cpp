@@ -19,8 +19,8 @@ all: libawsClient test_awsClient
 -include $(OBJS:.o=.d)
 
 %.o: %.cpp
-	$(CXX) -c $(FLAGS) -I$(INC) $*.cpp -o $*.o
-	$(CXX) -MM $(FLAGS) -I$(INC) $*.cpp > $*.d
+	$(CXX) -c $(FLAGS) $*.cpp -o $*.o
+	$(CXX) -MM $(FLAGS) $*.cpp > $*.d
 
 test_awsClient: $(TST_AWSCLIENT_OBJ)
 	$(CXX) -o tests/test_awsClient $(TST_AWSCLIENT_OBJ) -pedantic $(FLAGS) $(LIBS)
@@ -30,4 +30,3 @@ libawsClient: awssigv4.o awsClient.o
 
 clean:
 	$(RM) *.o *.d *.so tests/*.o tests/*.d $(TESTS)
-	find . -type f \( -name '*.gcda' -o -name '*.gcno' \) -delete
