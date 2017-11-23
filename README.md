@@ -2,9 +2,14 @@
 # C++ implementation of AWS Signatrue V4 for signing API request and Rest API Example
 
 # C++ implementation of AWS Signatrue V4 for signing API request
+
 awssigv4.cpp
 awssigv4.h
+
+Note: I have taken the code from https://github.com/harendra247/aws-sigv4-cpp and enhanced to implementation of Client for AWS S3
+
 # C++ implementation of Client for AWS S3 using AWS Signatrue V4 API requests
+
 awsClient.cpp
 awsClient.h
 
