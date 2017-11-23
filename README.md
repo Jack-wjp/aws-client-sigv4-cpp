@@ -1,8 +1,12 @@
 # aws-client-sigv4-cpp
-# Rest API for AWS S3 using signature version 4
+# C++ implementation of AWS Signatrue V4 for signing API request and Rest API Example
 
 # C++ implementation of AWS Signatrue V4 for signing API request
+awssigv4.cpp
+awssigv4.h
 # C++ implementation of Client for AWS S3 using AWS Signatrue V4 API requests
+awsClient.cpp
+awsClient.h
 
 To run the test cases following parameters needs to be configured.
 Region needs to be configured to run the test i.e.: ap-south-1
