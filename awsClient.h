@@ -61,6 +61,9 @@ using Poco::JSON::Parser;
 using Poco::Dynamic::Var;
 using Poco::DynamicStruct;
 
+using namespace Poco;
+using namespace XML;
+using namespace Net;
 using namespace std;
 
 class poco_ssl_initializar_t;
@@ -118,7 +121,7 @@ namespace hcm {
             IO_STATUS_CODE put(const std::string &key, const std::string &value, int &resp_code);
             IO_STATUS_CODE remove(const std::string &key, int &resp_code);
             IO_STATUS_CODE head(const std::string &key, int &resp_code);
-            vector<string> scan(const string &scanstr, int scan_key_limit, int &resp_code);
+            IO_STATUS_CODE scan(const string &scanstr, string &cont_token, int scan_key_limit, int &resp_code, string &resp_data);
         public:
             AWSio(
                     const std::string &service,
@@ -128,15 +131,16 @@ namespace hcm {
                     const std::string &access_key,
                     const std::string &prefix,
                     bool secureConnection
-                    );
+                 );
             ~AWSio();
             std::string post(const std::string &base_uri);
             IO_STATUS_CODE get(const std::string &key, std::string &output_string);
             IO_STATUS_CODE put(const std::string &key, const std::string &value);
             IO_STATUS_CODE remove(const std::string &key);
             IO_STATUS_CODE head(const std::string &key);
-            vector<string> scan(const string &scanstr, int scan_key_limit);
+            IO_STATUS_CODE scan(const string &scanstr, string &cont_token, string &resp_data, int scan_key_limit = 1000);
             int create_canonical_query_uri(Poco::URI &uri, std::string &canonical_uri, std::string &query_string, const std::string &key, const std::string &prefix);
+            bool parseXmlScanResults(string &resp_xml_data, vector<string> &scans, string &nextContinuationToken);
     };
 }
 #endif
