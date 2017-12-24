@@ -4,12 +4,37 @@ using std::cout;
 using std::cin;
 using std::getline;
 
-using namespace Poco;
-using namespace Net;
-using namespace XML;
-using namespace std;
+const std::string RESERVED_PATH        = "?#";
+const std::string RESERVED_QUERY       = "?#/:;+@";
+const std::string RESERVED_QUERY_PARAM = "?#/:;+@&=";
+const std::string RESERVED_FRAGMENT    = "";
+const std::string ILLEGAL = "%<>{}|\\\"^`!*'()$,[]";
 
 namespace hcm{
+    std::string query_encode_v2(const std::string& str, const std::string& reserved)
+    {
+        std::string encodedStr;
+        for (std::string::const_iterator it = str.begin(); it != str.end(); ++it)
+        {
+            char c = *it;
+            if ((c >= 'a' && c <= 'z') ||
+                    (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') ||
+                    c == '-' || c == '_' ||
+                    c == '.' || c == '~')
+            {
+                encodedStr += c;
+            }
+            else if (c <= 0x20 || c >= 0x7F || ILLEGAL.find(c) != std::string::npos || reserved.find(c) != std::string::npos)
+            {
+                encodedStr += '%';
+                encodedStr += NumberFormatter::formatHex((unsigned) (unsigned char) c, 2);
+            }
+            else encodedStr += c;
+        }
+        //cout << "encodedStr : " << encodedStr << endl;
+        return encodedStr;
+    }
     std::string query_encode(const std::string &s)
     {
         static const char lookup[]= "0123456789ABCDEF"; //Hex Numbers
@@ -32,6 +57,7 @@ namespace hcm{
                 e << lookup[ (c&0x0F) ];
             }
         }
+        //cout << "e : " << e.str() << endl;
         return e.str();
     }
 
@@ -58,6 +84,51 @@ namespace hcm{
             }
         }
         return e.str();
+    }
+
+    bool AWSio::parseXmlScanResults(string &resp_xml_data, vector<string> &scans, string &nextContinuationToken){
+        std::cout << "[" << __PRETTY_FUNCTION__ << "]: " << " Start" << std::endl;
+        stringstream response_body;
+        DOMParser parser;
+        try{
+            response_body << resp_xml_data;
+            //cout << "  -------------" << resp_xml_data << endl << endl;
+            InputSource src { response_body };
+            AutoPtr<Document> dom = parser.parse(&src);
+            auto list = dom->getElementsByTagName("Key");
+            auto isTruncated = dom->getElementsByTagName("IsTruncated")->item(0)->innerText();
+            if(isTruncated == "true")
+            {
+                nextContinuationToken = dom->getElementsByTagName("NextContinuationToken")->item(0)->innerText();
+            }
+            else
+            {
+                nextContinuationToken = "";
+            }
+            for (unsigned long index = 0; index < list->length(); ++index)
+            {
+                auto keyname = list->item(index)->innerText();
+                if (keyname.back() != '/') {
+                    scans.push_back(keyname.substr(m_prefix.length()-1)); //remove the m_prefix
+                }
+            }
+        }
+        catch(const Poco::Exception& e)
+        {
+            std::cerr << "[" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.displayText() << std::endl;
+            return false;
+        }
+        catch( const std::exception& e )
+        {
+            std::cerr << "Caught exception: " << "[" << __PRETTY_FUNCTION__ << "]: " << e.what() << std::endl;;
+            return false;
+        }
+        catch(...)
+        {
+            std::cerr << "Default exception: " << "[" << __PRETTY_FUNCTION__ << "]: " << std::endl;;
+            return false;
+        }
+        return true;
     }
 
     int AWSio::create_canonical_query_uri(Poco::URI &uri, std::string &canonical_uri, std::string &query_string, const std::string &key, const std::string &prefix)
@@ -173,7 +244,7 @@ namespace hcm{
         return OK;
     }
 
-    vector<string> AWSio::scan(const string &scanstr, int scan_key_limit, int &resp_code)
+    IO_STATUS_CODE AWSio::scan(const string &scanstr, string &cont_token, int scan_key_limit, int &resp_code, string &resp_data)
     {
         std::string output_string;
         std::vector<string> list_files;
@@ -182,6 +253,7 @@ namespace hcm{
         std::string canonical_uri = "";
         std::string query_prefix = "list-type=2&max-keys=";
         std::string query_prefix_1 = "&prefix=";
+        std::string query_prefix_2 = "&continuation-token=";
         std::string query_string = "";
         std::string payload = "";
         stringstream response_body;
@@ -191,8 +263,15 @@ namespace hcm{
 
         create_canonical_query_uri(uri, canonical_uri, query_string, "", "");
         //update query for scan
-        query_string = query_prefix + std::to_string(scan_key_limit) + query_prefix_1 + m_prefix.substr(1) + scanstr;
-        // cout << "Query String1 : "   << query_encode(query_string) << endl;
+        if(cont_token.length())
+        {
+            query_string = query_encode(query_prefix + std::to_string(scan_key_limit) + query_prefix_1 + m_prefix.substr(1) + scanstr + query_prefix_2) + query_encode_v2(cont_token, RESERVED_QUERY_PARAM);
+        }
+        else
+        {
+            query_string = query_encode(query_prefix + std::to_string(scan_key_limit) + query_prefix_1 + m_prefix.substr(1) + scanstr);
+        }
+        //cout << "Query String1 : "   << query_string <<  " : " << endl;
 
         try
         {
@@ -201,18 +280,18 @@ namespace hcm{
             HTTPResponse response;
             if(m_secureConnection)
             {
-                if(OK != send_request_secure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_encode(query_string), payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
+                if(OK != send_request_secure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
                     cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
                     resp_code = response.getStatus();
-                    return list_files;
+                    return FAIL;
                 }
             }
             else
             {
-                if(OK != send_request_nonsecure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_encode(query_string), payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
+                if(OK != send_request_nonsecure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
                     cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
                     resp_code = response.getStatus();
-                    return list_files;
+                    return FAIL;
                 }
             }
             cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
@@ -220,22 +299,13 @@ namespace hcm{
             if(response.getStatus() / 100 > 2)
             {
                 cout << "scan response body  ------  " << response_body.str() << endl;
-                return list_files;
+                return FAIL;
             }
             else
             {
-                InputSource src { response_body };
-                DOMParser parser;
-                AutoPtr<Document> dom = parser.parse(&src);
-                auto list = dom->getElementsByTagName("Key");
-
-                for (unsigned long index = 0; index < list->length(); ++index)
-                {
-                    auto keyname = list->item(index)->innerText();
-                    if (keyname.back()!='/') {
-                        list_files.push_back(keyname.substr(m_prefix.length()-1)); //remove the prefix
-                    }
-                }
+                //cout << "scan response body  ------  " << response_body.str() << endl;
+                resp_data = response_body.str();
+                return OK;
             }
         }
         catch ( const Poco::Net::SSLException& e )
@@ -250,7 +320,7 @@ namespace hcm{
         {
             std::cerr << "Caught exception: " <<  "[" << __PRETTY_FUNCTION__ << "]: " << e.what() << std::endl;;
         }
-        return list_files;
+        return FAIL;
     }
 
     IO_STATUS_CODE AWSio::head(const std::string &key, int &resp_code)
@@ -685,17 +755,21 @@ namespace hcm{
         return ret;
     }
 
-    vector<string> AWSio::scan(const string &scanstr, int scan_key_limit)
+    IO_STATUS_CODE AWSio::scan(const string &scanstr, string &cont_token, string &resp_data, int scan_key_limit)
     {
         int resp_code = 200;
-        std::vector<string> list_files;
-        list_files = scan(scanstr, scan_key_limit, resp_code);
+        IO_STATUS_CODE ret = OK;
+        ret = scan(scanstr, cont_token, scan_key_limit, resp_code, resp_data);
         if(500 == resp_code)
         {
             cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying..." << endl;
-            list_files = scan(scanstr, scan_key_limit, resp_code);
+            ret = scan(scanstr, cont_token, scan_key_limit, resp_code, resp_data);
         }
-        return list_files;
+        if (404 == resp_code)
+        {
+            return NOTFOUND;
+        }
+        return ret;
     }
 
     IO_STATUS_CODE AWSio::get(const std::string &key, std::string &output_string)
