@@ -1,6 +1,9 @@
 #ifndef AWS_CLIENT_H
 #define AWS_CLIENT_H
 
+#if GTEST
+#include "gmock/gmock.h"
+#endif
 #include <iostream>
 #include <sstream> 
 #include <cstring>
@@ -15,6 +18,7 @@
 #include "openssl/hmac.h"
 #include "json/json.h"
 #include "awssigv4.h"
+#include "utils.h"
 
 #include "Poco/URI.h"
 #include "Poco/UUIDGenerator.h"
@@ -66,63 +70,76 @@ using namespace XML;
 using namespace Net;
 using namespace std;
 
-class poco_ssl_initializar_t;
-namespace {
-    static Poco::SingletonHolder<poco_ssl_initializar_t> ssl_initializer_singleton;
-}
-class poco_ssl_initializar_t {
-    public:
-        static Poco::Net::Context::Ptr get_client_context() {
-            ssl_initializer_singleton.get();
-            return Poco::Net::SSLManager::instance().defaultClientContext();
-        }
-
-        static Poco::Net::SSLManager& get_ssl_manager() {
-            ssl_initializer_singleton.get();
-            return Poco::Net::SSLManager::instance();
-        }
-
-    private:
-        poco_ssl_initializar_t() {
-            Poco::SharedPtr<Poco::Net::InvalidCertificateHandler> ptrHandler = new Poco::Net::AcceptCertificateHandler(false);
-            Poco::Net::Context::Ptr ptrContext = new Poco::Net::Context(Poco::Net::Context::CLIENT_USE, "");
-            Poco::Net::SSLManager::instance().initializeClient(0, ptrHandler, ptrContext);
-        };
-        ~poco_ssl_initializar_t() {};
-        
-        friend class Poco::SingletonHolder<poco_ssl_initializar_t>;
-};
-
-class poco_https_session_t : public Poco::Net::HTTPSClientSession {
-    public:
-        poco_https_session_t (const std::string &host, Poco::UInt16 port) : 
-            HTTPSClientSession(host, port, poco_ssl_initializar_t::get_client_context()) {
-            };
-        virtual ~poco_https_session_t () {};
-};
-
-class poco_http_session_t : public Poco::Net::HTTPClientSession {
-    public:
-        poco_http_session_t (const std::string &host, Poco::UInt16 port) : 
-            HTTPClientSession(host, port) {
-            };
-        virtual ~poco_http_session_t () {};
-};
-
 namespace hcm {
+
     enum IO_STATUS_CODE { OK, FAIL, NOTFOUND };
-    class AWSio
+    class AWSS3io
     {
         private:
             std::string m_secret_key, m_access_key, m_service, m_host, m_region, m_prefix;
             bool m_secureConnection;
 
-            IO_STATUS_CODE get(const std::string &key, std::string &output_string, int &resp_code);
+        public:
+            IO_STATUS_CODE get(const std::string &key, std::string &output_string, int &resp_code, std::map<string, string> &response_headers, int offset=0, int range=0);
             IO_STATUS_CODE put(const std::string &key, const std::string &value, int &resp_code);
             IO_STATUS_CODE remove(const std::string &key, int &resp_code);
-            IO_STATUS_CODE head(const std::string &key, int &resp_code);
+            IO_STATUS_CODE head(const std::string &key, const std::string &type, std::string &output_value_str, int &resp_code);
             IO_STATUS_CODE scan(const string &scanstr, string &cont_token, int scan_key_limit, int &resp_code, string &resp_data);
+            AWSS3io(const std::string & secret_key, const std::string & access_key, const std::string & service, const std::string & host, const std::string & region, const std::string & prefix, bool secureConnection = true);
+            ~AWSS3io();
+            int create_canonical_query_uri(Poco::URI &uri, std::string &canonical_uri, std::string &query_string, const std::string &key, const std::string &prefix);
+            IO_STATUS_CODE send_request(HTTPRequest &request, HTTPResponse &response, Poco::URI &uri, const std::string &authorization, const std::string &date, const std::string &payload_hash, const std::string payload, stringstream &response_body, int &resp_code);
+
+            cm_network_session_t *m_network_session = nullptr;
+    };
+#if GTEST
+    class MockAWSS3io
+    {
+        private:
+            std::string m_secret_key, m_access_key, m_service, m_host, m_region, m_prefix;
+            bool m_secureConnection;
+
         public:
+            MockAWSS3io(Json::Value device_io_config, bool secureConnection = true);
+            MockAWSS3io(const std::string & secret_key, const std::string & access_key, const std::string & service, const std::string & host, const std::string & region, const std::string & prefix, bool secureConnection = true)
+            {
+                m_secret_key = secret_key;
+                m_access_key = access_key;
+                m_service = service;
+                m_host = host;
+                m_region = region;
+                m_prefix = prefix;
+                m_secureConnection = secureConnection;
+            }
+            ~MockAWSS3io() {}
+            MOCK_METHOD6(get, IO_STATUS_CODE(const std::string &key, std::string &output_string, int &resp_code, std::map<string, string>&response_headers, int offset, int range));
+            MOCK_METHOD3(put, IO_STATUS_CODE(const std::string &key, const std::string &value, int &resp_code));
+            MOCK_METHOD2(remove, IO_STATUS_CODE(const std::string &key, int &resp_code));
+            MOCK_METHOD4(head, IO_STATUS_CODE(const std::string &key, const std::string &etag, std::string &output_value_str, int &resp_code));
+            MOCK_METHOD5(scan, IO_STATUS_CODE(const string &scanstr, string &cont_token, int scan_key_limit, int &resp_code, string &resp_data));
+            MOCK_METHOD5(create_canonical_query_uri, int(Poco::URI &uri, std::string &canonical_uri, std::string &query_string, const std::string &key, const std::string &prefix));
+            cm_network_session_t *m_network_session = nullptr;
+    };
+#endif
+
+    class AWSio
+    {
+        public:
+            AWSio(Json::Value device_io_config, bool secureConnection = true);
+#if GTEST
+            AWSio(MockAWSS3io* paws, bool secureConnection);
+#else
+            AWSio(AWSS3io* paws, bool secureConnection);
+#endif
+            ~AWSio();
+            IO_STATUS_CODE get(const std::string &key, std::string &output_string, std::map<string, string> &response_headers, int offset=0, int range=0);
+            IO_STATUS_CODE put(const std::string &key, const std::string &value);
+            IO_STATUS_CODE remove(const std::string &key);
+            IO_STATUS_CODE head(const std::string &key, const std::string &type, std::string &output_value_str);
+            IO_STATUS_CODE scan(const string &scanstr, string &cont_token, string &resp_data, int scan_key_limit = 1000);
+
+            uint _MAX_RETRY_COUNT = 5;
+            double _RETRY_SLEEP_S = 5;
             AWSio(
                     const std::string &service,
                     const std::string &bucket,
@@ -132,15 +149,12 @@ namespace hcm {
                     const std::string &prefix,
                     bool secureConnection
                  );
-            ~AWSio();
-            std::string post(const std::string &base_uri);
-            IO_STATUS_CODE get(const std::string &key, std::string &output_string);
-            IO_STATUS_CODE put(const std::string &key, const std::string &value);
-            IO_STATUS_CODE remove(const std::string &key);
-            IO_STATUS_CODE head(const std::string &key);
-            IO_STATUS_CODE scan(const string &scanstr, string &cont_token, string &resp_data, int scan_key_limit = 1000);
-            int create_canonical_query_uri(Poco::URI &uri, std::string &canonical_uri, std::string &query_string, const std::string &key, const std::string &prefix);
-            bool parseXmlScanResults(string &resp_xml_data, vector<string> &scans, string &nextContinuationToken);
+
+#if GTEST
+            MockAWSS3io* aws_s3_io = nullptr;
+#else
+            AWSS3io* aws_s3_io = nullptr;
+#endif
     };
 }
 #endif

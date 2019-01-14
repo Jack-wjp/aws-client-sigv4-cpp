@@ -305,14 +305,9 @@ namespace hcm {
             {
                 payload_hash = sha256Base16(payload);
             }
-            else
-            {
-                payload_hash = "UNSIGNED-PAYLOAD";
-            }
         }
         else if(SEED_CHUNK == st)
         {
-            //payload_hash = "UNSIGNED-PAYLOAD";
             payload_hash = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";
         }
         else

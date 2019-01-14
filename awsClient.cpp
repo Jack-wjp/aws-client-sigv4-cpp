@@ -86,52 +86,7 @@ namespace hcm{
         return e.str();
     }
 
-    bool AWSio::parseXmlScanResults(string &resp_xml_data, vector<string> &scans, string &nextContinuationToken){
-        std::cout << "[" << __PRETTY_FUNCTION__ << "]: " << " Start" << std::endl;
-        stringstream response_body;
-        DOMParser parser;
-        try{
-            response_body << resp_xml_data;
-            //cout << "  -------------" << resp_xml_data << endl << endl;
-            InputSource src { response_body };
-            AutoPtr<Document> dom = parser.parse(&src);
-            auto list = dom->getElementsByTagName("Key");
-            auto isTruncated = dom->getElementsByTagName("IsTruncated")->item(0)->innerText();
-            if(isTruncated == "true")
-            {
-                nextContinuationToken = dom->getElementsByTagName("NextContinuationToken")->item(0)->innerText();
-            }
-            else
-            {
-                nextContinuationToken = "";
-            }
-            for (unsigned long index = 0; index < list->length(); ++index)
-            {
-                auto keyname = list->item(index)->innerText();
-                if (keyname.back() != '/') {
-                    scans.push_back(keyname.substr(m_prefix.length()-1)); //remove the m_prefix
-                }
-            }
-        }
-        catch(const Poco::Exception& e)
-        {
-            std::cerr << "[" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.displayText() << std::endl;
-            return false;
-        }
-        catch( const std::exception& e )
-        {
-            std::cerr << "Caught exception: " << "[" << __PRETTY_FUNCTION__ << "]: " << e.what() << std::endl;;
-            return false;
-        }
-        catch(...)
-        {
-            std::cerr << "Default exception: " << "[" << __PRETTY_FUNCTION__ << "]: " << std::endl;;
-            return false;
-        }
-        return true;
-    }
-
-    int AWSio::create_canonical_query_uri(Poco::URI &uri, std::string &canonical_uri, std::string &query_string, const std::string &key, const std::string &prefix)
+    int AWSS3io::create_canonical_query_uri(Poco::URI &uri, std::string &canonical_uri, std::string &query_string, const std::string &key, const std::string &prefix)
     {
         std::string uri_str{(m_secureConnection ? "https://" : "http://") + m_host + prefix + key};
         // cout << "base uri : " << uri_str << endl;
@@ -146,7 +101,8 @@ namespace hcm{
         const auto p = uri.getPath();
         if (!p.empty())
         {
-            Poco::URI::encode(p,"", canonical_uri);
+            //Poco::URI::encode(p,"", canonical_uri); //Upon POCO update uncomment this statement as this is fixed in latest poco
+            canonical_uri = query_encode_v2(p, ""); //Comment this line when above line in being uncommented
         }
         else
         {
@@ -168,8 +124,9 @@ namespace hcm{
         return 0;
     }
 
-    IO_STATUS_CODE send_request_secure_connection(HTTPRequest &request, HTTPResponse &response, Poco::URI &uri, const std::string &authorization, const std::string &date, const std::string &payload_hash, const std::string payload, stringstream &response_body)
+    IO_STATUS_CODE AWSS3io::send_request(HTTPRequest &request, HTTPResponse &response, Poco::URI &uri, const std::string &authorization, const std::string &date, const std::string &payload_hash, const std::string payload, stringstream &response_body, int &resp_code)
     {
+        resp_code = 200;
         try{
             request.setContentType("application/octet-stream");
             request.add("Authorization",authorization);
@@ -177,17 +134,40 @@ namespace hcm{
             request.add("X-Amz-Content-Sha256", payload_hash);
             request.add("Accept", "*/*");
             request.add("Accept-Encoding", "gzip, deflate");
-            poco_https_session_t http_session(uri.getHost(), uri.getPort());
-            http_session.setTimeout(Poco::Timespan(120, 0)); // setting timeout as 120 seconds
+            request.setContentLength(0);
+            request.setKeepAlive(true);
+            if(nullptr == m_network_session)
+            {
+                m_network_session = new cm_network_session_t(uri.getHost(), uri.getPort(), m_secureConnection);
+            }
             // cout << "Request formed" << endl;
-            http_session.sendRequest(request);
+            //auto start = chrono::system_clock::now();
+            m_network_session->get_network_session()->sendRequest(request);
             // cout << "Request sent" << endl;
-            //X509Certificate cert = http_session.serverCertificate();
-            //cout << "Cert common name : " << cert.commonName() << endl;
-            istream & response_body_stream = http_session.receiveResponse(response);
+            istream & response_body_stream = m_network_session->get_network_session()->receiveResponse(response);
             if(response_body_stream.good()) {
                 response_body  <<  response_body_stream.rdbuf();
             }
+            //auto now = chrono::system_clock::now();
+            //double millisecs = chrono::duration_cast<chrono::milliseconds>(now - start).count();
+            //cout << "[send_request::get] : " << uri.getPathAndQuery() << " size : " << response_body.str().size() << " bytes.. time elapsed: " << millisecs << " millisecs. " << endl;
+            resp_code = response.getStatus();
+        }
+        catch ( const Poco::Net::NoMessageException& e )
+        {
+            std::cerr << "Net::NoMessageException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
+            delete m_network_session;
+            m_network_session = nullptr;
+            resp_code = 520;
+            return FAIL;
+        }
+        catch ( const Poco::Net::ConnectionResetException& e )
+        {
+            std::cerr << "Net::ConnectionResetException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
+            delete m_network_session;
+            m_network_session = nullptr;
+            resp_code = 520;
+            return FAIL;
         }
         catch ( const Poco::Net::SSLException& e )
         {
@@ -207,44 +187,7 @@ namespace hcm{
         return OK;
     }
 
-    IO_STATUS_CODE send_request_nonsecure_connection(HTTPRequest &request, HTTPResponse &response, Poco::URI &uri, const std::string &authorization, const std::string &date, const std::string &payload_hash, const std::string payload, stringstream &response_body)
-    {
-        try{
-            request.setContentType("application/octet-stream");
-            request.add("Authorization",authorization);
-            request.add("X-Amz-Date", date);
-            request.add("X-Amz-Content-Sha256", payload_hash);
-            request.add("Accept", "*/*");
-            request.add("Accept-Encoding", "gzip, deflate");
-            poco_http_session_t http_session(uri.getHost(), uri.getPort());
-            http_session.setTimeout(Poco::Timespan(120, 0)); // setting timeout as 120 seconds
-            // cout << "Request formed" << endl;
-            http_session.sendRequest(request);
-            // cout << "Request sent" << endl;
-            istream & response_body_stream = http_session.receiveResponse(response);
-            if(response_body_stream.good()) {
-                response_body  <<  response_body_stream.rdbuf();
-            }
-        }
-        catch ( const Poco::Net::SSLException& e )
-        {
-            std::cerr << "Net::SSLException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
-            return FAIL;
-        }
-        catch(const Poco::Exception& e)
-        {
-            std::cerr << "[" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.displayText() << std::endl;
-            return FAIL;
-        }
-        catch( const std::exception& e )
-        {
-            std::cerr << "Caught exception: " << "[" << __PRETTY_FUNCTION__ << "]: " << e.what() << std::endl;;
-            return FAIL;
-        }
-        return OK;
-    }
-
-    IO_STATUS_CODE AWSio::scan(const string &scanstr, string &cont_token, int scan_key_limit, int &resp_code, string &resp_data)
+    IO_STATUS_CODE AWSS3io::scan(const string &scanstr, string &cont_token, int scan_key_limit, int &resp_code, string &resp_data)
     {
         std::string output_string;
         std::vector<string> list_files;
@@ -275,29 +218,16 @@ namespace hcm{
 
         try
         {
-            // cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
+            //cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
             HTTPRequest request(HTTPRequest::HTTP_GET, canonical_uri+"?"+query_string, HTTPMessage::HTTP_1_1);
             HTTPResponse response;
-            if(m_secureConnection)
-            {
-                if(OK != send_request_secure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
+            if(OK != send_request(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body, resp_code)){
+                return FAIL;
             }
-            else
+
+            if(resp_code / 100 > 2)
             {
-                if(OK != send_request_nonsecure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
-            }
-            cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-            resp_code = response.getStatus();
-            if(response.getStatus() / 100 > 2)
-            {
+                cerr << "server response: " << resp_code << ' ' << response.getReason() << endl;
                 cout << "scan response body  ------  " << response_body.str() << endl;
                 return FAIL;
             }
@@ -307,10 +237,6 @@ namespace hcm{
                 resp_data = response_body.str();
                 return OK;
             }
-        }
-        catch ( const Poco::Net::SSLException& e )
-        {
-            std::cerr << "Net::SSLException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
         }
         catch(const Poco::Exception& e)
         {
@@ -323,7 +249,7 @@ namespace hcm{
         return FAIL;
     }
 
-    IO_STATUS_CODE AWSio::head(const std::string &key, int &resp_code)
+    IO_STATUS_CODE AWSS3io::head(const std::string &key, const std::string &type, std::string &output_value_str, int &resp_code)
     {
         Poco::URI uri;
         std::string payload_hash = "";
@@ -338,30 +264,16 @@ namespace hcm{
         create_canonical_query_uri(uri, canonical_uri, query_string, key, m_prefix);
         try
         {
-            cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
+            //cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
             HTTPRequest request(HTTPRequest::HTTP_HEAD, canonical_uri, HTTPMessage::HTTP_1_1);
             HTTPResponse response;
-            if(m_secureConnection)
-            {
-                if(OK != send_request_secure_connection(request, response, uri, signature.getAuthorization("HEAD", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
+            if(OK != send_request(request, response, uri, signature.getAuthorization("HEAD", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body, resp_code)){
+                return FAIL;
             }
-            else
+            if(resp_code / 100 > 2)
             {
-                if(OK != send_request_nonsecure_connection(request, response, uri, signature.getAuthorization("HEAD", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
-            }
-            cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-            resp_code = response.getStatus();
-            if(response.getStatus() / 100 > 2)
-            {
-                if(404 == response.getStatus())
+                cerr << "server response: " << resp_code << ' ' << response.getReason() << endl;
+                if(404 == resp_code) 
                 {
                     return NOTFOUND;
                 }
@@ -371,12 +283,9 @@ namespace hcm{
             else
             {
                 cout << "Content Length : " << response.getContentLength() << endl;
+                cout << "HEAD Response.. type: " << type << ", value : " << response.get(type) << endl;
+                output_value_str = response.get(type);
             }
-        }
-        catch ( const Poco::Net::SSLException& e )
-        {
-            std::cerr << "Net::SSLException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
-            return FAIL;
         }
         catch(const Poco::Exception& e)
         {
@@ -391,7 +300,7 @@ namespace hcm{
         return OK;
     }
 
-    IO_STATUS_CODE AWSio::remove(const std::string &key, int &resp_code)
+    IO_STATUS_CODE AWSS3io::remove(const std::string &key, int &resp_code)
     {
         Poco::URI uri;
         std::string payload_hash = "";
@@ -406,41 +315,22 @@ namespace hcm{
         create_canonical_query_uri(uri, canonical_uri, query_string, key, m_prefix);
         try
         {
-            cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
+            //cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
             HTTPRequest request(HTTPRequest::HTTP_DELETE, canonical_uri, HTTPMessage::HTTP_1_1);
             HTTPResponse response;
-            if(m_secureConnection)
-            {
-                if(OK != send_request_secure_connection(request, response, uri, signature.getAuthorization("DELETE", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
+            if(OK != send_request(request, response, uri, signature.getAuthorization("DELETE", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body, resp_code)){
+                return FAIL;
             }
-            else
-            {
-                if(OK != send_request_nonsecure_connection(request, response, uri, signature.getAuthorization("DELETE", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
-            }
-            cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-            resp_code = response.getStatus();
-            if(response.getStatus() / 100 > 2)
+            if(resp_code / 100 > 2)
             {
                 cout << "DELETE response body  ------  " << response_body.str() << endl;
+                cerr << "server response: " << resp_code << ' ' << response.getReason() << endl;
                 return FAIL;
             }
             else
             {
                 //cout << "content length : " << response.getcontentlength() << endl;
             }
-        }
-        catch ( const Poco::Net::SSLException& e )
-        {
-            std::cerr << "Net::SSLException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
-            return FAIL;
         }
         catch(const Poco::Exception& e)
         {
@@ -455,7 +345,7 @@ namespace hcm{
         return OK;
     }
 
-    IO_STATUS_CODE AWSio::put(const std::string &key, const std::string &value, int &resp_code)
+    IO_STATUS_CODE AWSS3io::put(const std::string &key, const std::string &value, int &resp_code)
     {
         Poco::URI uri;
         std::string payload_hash = "";
@@ -471,164 +361,107 @@ namespace hcm{
         create_canonical_query_uri(uri, canonical_uri, query_string, key, m_prefix);
         try
         {
-            if(m_secureConnection)
+            //cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
+            HTTPRequest request(HTTPRequest::HTTP_PUT, canonical_uri, HTTPMessage::HTTP_1_1);
+            request.setContentType("application/octet-stream");
+            request.add("Accept", "*/*");
+            request.add("Accept-Encoding", "gzip, deflate");
+            request.setKeepAlive(true);
+            if(nullptr == m_network_session)
             {
-                poco_https_session_t http_session(uri.getHost(), uri.getPort());
-                http_session.setTimeout(Poco::Timespan(120, 0)); // setting timeout as 120 seconds
-                cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
-                HTTPRequest request(HTTPRequest::HTTP_PUT, canonical_uri, HTTPMessage::HTTP_1_1);
-                request.setContentType("application/octet-stream");
-                request.add("Accept", "*/*");
-                request.add("Accept-Encoding", "gzip, deflate");
-                if(total_size > chunk_size)
+                m_network_session = new cm_network_session_t(uri.getHost(), uri.getPort(), m_secureConnection);
+            }
+            if(total_size > chunk_size)
+            {
+                std::string authorization = signature.getAuthorization("PUT", canonical_uri, query_string, value, payload_hash, SEED_CHUNK);
+                request.add("Authorization",authorization);
+                request.add("content-encoding", "aws-chunked");
+                request.add("x-amz-decoded-content-length", std::to_string(total_size));
+                request.add("X-Amz-Date", signature.getdate());
+                request.add("X-Amz-Content-Sha256",payload_hash);
+                //request.add("x-amz-storage-class","REDUCED_REDUNDANCY");
+                request.setContentLength(signature.calculateContentLength(total_size, chunk_size));
+                //int s = signature.calculateContentLength(66560, 65536); // output : 66824
+                auto prevSig = authorization.substr(authorization.find("Signature=") + 10 );
+                //cout << "auth put signature : " << prevSig << endl;
+
+                //cout << "Request formed" << endl;
+                ostream& body_stream = m_network_session->get_network_session()->sendRequest(request);
+                //cout << "Request sent" << endl;
+                size_t chunk_len;
+                //X509Certificate cert = m_network_session->get_network_session()->serverCertificate();
+                //cout << "Cert common name : " << cert.commonName() << endl;
+                for (size_t rangeStart = 0; rangeStart < total_size; rangeStart += chunk_size)
                 {
-                    std::string authorization = signature.getAuthorization("PUT", canonical_uri, query_string, value, payload_hash, SEED_CHUNK);
-                    request.add("Authorization",authorization);
-                    request.add("content-encoding", "aws-chunked");
-                    request.add("x-amz-decoded-content-length", std::to_string(total_size));
-                    request.add("X-Amz-Date", signature.getdate());
-                    request.add("X-Amz-Content-Sha256",payload_hash);
-                    //request.add("x-amz-storage-class","REDUCED_REDUNDANCY");
-                    request.setContentLength(signature.calculateContentLength(total_size, chunk_size));
-                    //int s = signature.calculateContentLength(66560, 65536); // output : 66824
-                    auto prevSig = authorization.substr(authorization.find("Signature=") + 10 );
-                    //cout << "auth put signature : " << prevSig << endl;
+                    int end = min(static_cast<int>(rangeStart + chunk_size), static_cast<int>(value.length()));
+                    partNum++;
+                    chunk_len = end-rangeStart;
+                    //cout << "================= : " << value.substr(rangeStart, chunk_len) << endl ;
 
-                    cout << "Request formed" << endl;
-                    ostream& body_stream = http_session.sendRequest(request);
-                    cout << "Request sent" << endl;
-                    size_t chunk_len;
-                    //X509Certificate cert = http_session.serverCertificate();
-                    //cout << "Cert common name : " << cert.commonName() << endl;
-                    for (size_t rangeStart = 0; rangeStart < total_size; rangeStart += chunk_size)
-                    {
-                        int end = min(static_cast<int>(rangeStart + chunk_size), static_cast<int>(value.length()));
-                        partNum++;
-                        chunk_len = end-rangeStart;
-                        //cout << "================= : " << value.substr(rangeStart, chunk_len) << endl ;
-
-                        std::string chunkStringtoSign = signature.createChunkStringtoSign(prevSig, chunk_len, value.substr(rangeStart, chunk_len));
-                        //cout << "chunk srting to sign: " << chunkStringtoSign << " chunk size : " << chunk_len << endl;
-                        prevSig = signature.createSignature(chunkStringtoSign);
-                        body_stream << signature.createChunkData(prevSig, chunk_len, value.substr(rangeStart, chunk_len));
-                        //cout << "auth put signature : " << prevSig << " partnum : " << partNum << endl;
-                    }
-
-                    std::string chunkStringtoSign = signature.createChunkStringtoSign(prevSig, 0, "");
-                    //cout << "chunk srting to sign: " << chunkStringtoSign << " chunk size : 0" << endl;
+                    std::string chunkStringtoSign = signature.createChunkStringtoSign(prevSig, chunk_len, value.substr(rangeStart, chunk_len));
+                    //cout << "chunk srting to sign: " << chunkStringtoSign << " chunk size : " << chunk_len << endl;
                     prevSig = signature.createSignature(chunkStringtoSign);
-                    body_stream << signature.createChunkData(prevSig, 0, "");
-                    //cout << "auth put signature : " << prevSig << " partnum : " << ++partNum << endl << endl;
+                    body_stream << signature.createChunkData(prevSig, chunk_len, value.substr(rangeStart, chunk_len));
+                    //cout << "auth put signature : " << prevSig << " partnum : " << partNum << endl;
                 }
-                else
-                {
-                    request.add("Authorization",signature.getAuthorization("PUT", canonical_uri, query_string, value, payload_hash));
-                    request.add("X-Amz-Date", signature.getdate());
-                    request.add("X-Amz-Content-Sha256",payload_hash);
-                    request.setContentLength(value.size());
 
-                    cout << "Request formed" << endl;
-                    ostream& body_stream = http_session.sendRequest(request);
-                    cout << "Request sent" << endl;
-                    //X509Certificate cert = http_session.serverCertificate();
-                    //cout << "Cert common name : " << cert.commonName() << endl;
-                    body_stream << value;
-                }
-                HTTPResponse response;
-                stringstream response_body;
-                istream& response_body_stream = http_session.receiveResponse(response);
-                cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                resp_code = response.getStatus();
-                if(response_body_stream.good()) {
-                    response_body  <<  response_body_stream.rdbuf();
-                }
-                if(response.getStatus() / 100 > 2)
-                {
-                    cout << "PUT response body  ------  " << response_body.str() << endl;
-                    return FAIL;
-                }
-                else
-                {
-                    //cout << "content length : " << response.getcontentlength() << endl;
-                }
+                std::string chunkStringtoSign = signature.createChunkStringtoSign(prevSig, 0, "");
+                //cout << "chunk srting to sign: " << chunkStringtoSign << " chunk size : 0" << endl;
+                prevSig = signature.createSignature(chunkStringtoSign);
+                body_stream << signature.createChunkData(prevSig, 0, "");
+                body_stream.flush();
+                //cout << "Body sent" << endl;
+                //cout << "auth put signature : " << prevSig << " partnum : " << ++partNum << endl << endl;
             }
             else
             {
-                poco_http_session_t http_session(uri.getHost(), uri.getPort());
-                http_session.setTimeout(Poco::Timespan(120, 0)); // setting timeout as 120 seconds
-                cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
-                HTTPRequest request(HTTPRequest::HTTP_PUT, canonical_uri, HTTPMessage::HTTP_1_1);
-                request.setContentType("application/octet-stream");
-                request.add("Accept", "*/*");
-                request.add("Accept-Encoding", "gzip, deflate");
-                if(total_size > chunk_size)
-                {
-                    std::string authorization = signature.getAuthorization("PUT", canonical_uri, query_string, value, payload_hash, SEED_CHUNK);
-                    request.add("Authorization",authorization);
-                    request.add("content-encoding", "aws-chunked");
-                    request.add("x-amz-decoded-content-length", std::to_string(total_size));
-                    request.add("X-Amz-Date", signature.getdate());
-                    request.add("X-Amz-Content-Sha256",payload_hash);
-                    //request.add("x-amz-storage-class","REDUCED_REDUNDANCY");
-                    request.setContentLength(signature.calculateContentLength(total_size, chunk_size));
-                    //int s = signature.calculateContentLength(66560, 65536); // output : 66824
-                    auto prevSig = authorization.substr(authorization.find("Signature=") + 10 );
-                    //cout << "auth put signature : " << prevSig << endl;
+                request.add("Authorization",signature.getAuthorization("PUT", canonical_uri, query_string, value, payload_hash));
+                request.add("X-Amz-Date", signature.getdate());
+                request.add("X-Amz-Content-Sha256",payload_hash);
+                request.setContentLength(value.size());
 
-                    cout << "Request formed" << endl;
-                    ostream& body_stream = http_session.sendRequest(request);
-                    cout << "Request sent" << endl;
-                    size_t chunk_len;
-                    for (size_t rangeStart = 0; rangeStart < total_size; rangeStart += chunk_size)
-                    {
-                        int end = min(static_cast<int>(rangeStart + chunk_size), static_cast<int>(value.length()));
-                        partNum++;
-                        chunk_len = end-rangeStart;
-                        //cout << "================= : " << value.substr(rangeStart, chunk_len) << endl ;
-
-                        std::string chunkStringtoSign = signature.createChunkStringtoSign(prevSig, chunk_len, value.substr(rangeStart, chunk_len));
-                        //cout << "chunk srting to sign: " << chunkStringtoSign << " chunk size : " << chunk_len << endl;
-                        prevSig = signature.createSignature(chunkStringtoSign);
-                        body_stream << signature.createChunkData(prevSig, chunk_len, value.substr(rangeStart, chunk_len));
-                        //cout << "auth put signature : " << prevSig << " partnum : " << partNum << endl;
-                    }
-
-                    std::string chunkStringtoSign = signature.createChunkStringtoSign(prevSig, 0, "");
-                    //cout << "chunk srting to sign: " << chunkStringtoSign << " chunk size : 0" << endl;
-                    prevSig = signature.createSignature(chunkStringtoSign);
-                    body_stream << signature.createChunkData(prevSig, 0, "");
-                    //cout << "auth put signature : " << prevSig << " partnum : " << ++partNum << endl << endl;
-                }
-                else
-                {
-                    request.add("Authorization",signature.getAuthorization("PUT", canonical_uri, query_string, value, payload_hash));
-                    request.add("X-Amz-Date", signature.getdate());
-                    request.add("X-Amz-Content-Sha256",payload_hash);
-                    request.setContentLength(value.size());
-
-                    cout << "Request formed" << endl;
-                    ostream& body_stream = http_session.sendRequest(request);
-                    cout << "Request sent" << endl;
-                    body_stream << value;
-                }
-                HTTPResponse response;
-                stringstream response_body;
-                istream& response_body_stream = http_session.receiveResponse(response);
-                cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                resp_code = response.getStatus();
-                if(response_body_stream.good()) {
-                    response_body  <<  response_body_stream.rdbuf();
-                }
-                if(response.getStatus() / 100 > 2)
-                {
-                    cout << "PUT response body  ------  " << response_body.str() << endl;
-                    return FAIL;
-                }
-                else
-                {
-                    //cout << "content length : " << response.getcontentlength() << endl;
-                }
+                //cout << "Request formed" << endl;
+                ostream& body_stream = m_network_session->get_network_session()->sendRequest(request);
+                //cout << "Request sent" << endl;
+                //X509Certificate cert = m_network_session->get_network_session()->serverCertificate();
+                //cout << "Cert common name : " << cert.commonName() << endl;
+                body_stream << value;
+                body_stream.flush();
+                //cout << "Body sent" << endl;
             }
+            HTTPResponse response;
+            stringstream response_body;
+            istream& response_body_stream = m_network_session->get_network_session()->receiveResponse(response);
+            resp_code = response.getStatus();
+            if(response_body_stream.good()) {
+                response_body  <<  response_body_stream.rdbuf();
+            }
+            if(resp_code / 100 > 2)
+            {
+                cerr << "server response: " << resp_code << ' ' << response.getReason() << endl;
+                cout << "PUT response body  ------  " << response_body.str() << endl;
+                return FAIL;
+            }
+            else
+            {
+                //cout << "content length : " << response.getcontentlength() << endl;
+            }
+        }
+        catch ( const Poco::Net::NoMessageException& e )
+        {
+            std::cerr << "Net::NoMessageException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
+            delete m_network_session;
+            m_network_session = nullptr;
+            resp_code = 520;
+            return FAIL;
+        }
+        catch ( const Poco::Net::ConnectionResetException& e )
+        {
+            std::cerr << "Net::ConnectionResetException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
+            delete m_network_session;
+            m_network_session = nullptr;
+            resp_code = 520;
+            return FAIL;
         }
         catch ( const Poco::Net::SSLException& e )
         {
@@ -648,7 +481,7 @@ namespace hcm{
         return OK;
     }
 
-    IO_STATUS_CODE AWSio::get(const std::string &key, std::string &output_string, int &resp_code)
+    IO_STATUS_CODE AWSS3io::get(const std::string &key, std::string &output_string, int &resp_code, std::map<string, string> &resp_headers, int offset, int range)
     {
         Poco::URI uri;
         std::string payload_hash = "";
@@ -663,41 +496,28 @@ namespace hcm{
         create_canonical_query_uri(uri, canonical_uri, query_string, key, m_prefix);
         try
         {
-            cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
-            HTTPRequest request(HTTPRequest::HTTP_GET, canonical_uri, HTTPMessage::HTTP_1_1);
+            //cout << "host: " << uri.getHost() << " port : " << uri.getPort() << endl;
+            HTTPRequest request(HTTPRequest::HTTP_GET, canonical_uri, HTTPMessage::HTTP_1_1); 
+            if(range != 0){
+                string range_req = "bytes=" + std::to_string(offset) + "-" + std::to_string(offset+range-1);
+                request.add("Range",range_req);    
+            }                       
             HTTPResponse response;
-            if(m_secureConnection)
-            {
-                if(OK != send_request_secure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
+            if(OK != send_request(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body, resp_code)){
+                return FAIL;
             }
-            else
+            if(resp_code / 100 > 2)
             {
-                if(OK != send_request_nonsecure_connection(request, response, uri, signature.getAuthorization("GET", canonical_uri, query_string, payload, payload_hash), signature.getdate(), payload_hash, payload, response_body)){
-                    cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-                    resp_code = response.getStatus();
-                    return FAIL;
-                }
-            }
-            cerr << "server response: " << response.getStatus() << ' ' << response.getReason() << endl;
-            resp_code = response.getStatus();
-            if(response.getStatus() / 100 > 2)
-            {
+                cerr << "server response: " << resp_code << ' ' << response.getReason() << endl;
                 cout << "GET response body  ------  " << response_body.str() << endl;
                 return FAIL;
             }
             else
             {
                 //cout << "content length : " << response.getcontentlength() << endl;
+                string etag = response.get("etag", "");
+                resp_headers["etag"] = etag;
             }
-        }
-        catch ( const Poco::Net::SSLException& e )
-        {
-            std::cerr << "Net::SSLException: [" << __PRETTY_FUNCTION__ << "]: " << e.what() << ": " << e.message() << std::endl;
-            return FAIL;
         }
         catch(const Poco::Exception& e)
         {
@@ -718,11 +538,15 @@ namespace hcm{
         int resp_code = 200;
         std::vector<string> list_files;
         IO_STATUS_CODE ret = OK;
-        ret = put(key, value, resp_code);
-        if(500 == resp_code)
+        uint retry_count = 0;
+        std::cout << "AWSio::put: " << key << std::endl;
+        ret = aws_s3_io->put(key, value, resp_code);
+        while((500 == resp_code || 520 == resp_code) && retry_count < _MAX_RETRY_COUNT)
         {
-            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying..." << endl;
-            return put(key, value, resp_code);
+            usleep( _RETRY_SLEEP_S * 1000 * 1000);
+            retry_count++;
+            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying ( " << retry_count << " of 5) on response code " << resp_code << "...key : " << key << endl;
+            ret = aws_s3_io->put(key, value, resp_code);
         }
         return ret;
     }
@@ -732,25 +556,33 @@ namespace hcm{
         int resp_code = 200;
         std::vector<string> list_files;
         IO_STATUS_CODE ret = OK;
-        ret = remove(key, resp_code);
-        if(500 == resp_code)
+        uint retry_count = 0;
+        std::cout << "AWSio::remove: " << key << std::endl;
+        ret = aws_s3_io->remove(key, resp_code);
+        while((500 == resp_code || 520 == resp_code) && retry_count < _MAX_RETRY_COUNT)
         {
-            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying..." << endl;
-            return remove(key, resp_code);
+            usleep( _RETRY_SLEEP_S * 1000 * 1000);
+            retry_count++;
+            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying ( " << retry_count << " of 5). on response code " << resp_code << "..key : " << key << endl;
+            ret = aws_s3_io->remove(key, resp_code);
         }
         return ret;
     }
 
-    IO_STATUS_CODE AWSio::head(const std::string &key)
+    IO_STATUS_CODE AWSio::head(const std::string &key, const std::string &type, std::string &output_value_str)
     {
         int resp_code = 200;
         std::vector<string> list_files;
         IO_STATUS_CODE ret = OK;
-        ret = head(key, resp_code);
-        if(500 == resp_code)
+        uint retry_count = 0;
+        std::cout << "AWSio::head: key : " << key << " type : " << type << std::endl;
+        ret = aws_s3_io->head(key, type, output_value_str, resp_code);
+        while((500 == resp_code || 520 == resp_code) && retry_count < _MAX_RETRY_COUNT)
         {
-            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying..." << endl;
-            return head(key, resp_code);
+            usleep( _RETRY_SLEEP_S * 1000 * 1000);
+            retry_count++;
+            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying ( " << retry_count << " of 5) on response code " << resp_code << "...key : " << key << endl;
+            ret = aws_s3_io->head(key, type, output_value_str, resp_code);
         }
         return ret;
     }
@@ -759,12 +591,17 @@ namespace hcm{
     {
         int resp_code = 200;
         IO_STATUS_CODE ret = OK;
-        ret = scan(scanstr, cont_token, scan_key_limit, resp_code, resp_data);
-        if(500 == resp_code)
+        uint retry_count = 0;
+        //std::cout << "AWSio::scan: " << scanstr << std::endl;
+        ret = aws_s3_io->scan(scanstr, cont_token, scan_key_limit, resp_code, resp_data);
+        while((500 == resp_code || 520 == resp_code) && retry_count < _MAX_RETRY_COUNT)
         {
-            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying..." << endl;
-            ret = scan(scanstr, cont_token, scan_key_limit, resp_code, resp_data);
+            usleep( _RETRY_SLEEP_S * 1000 * 1000);
+            retry_count++;
+            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying ( " << retry_count << " of 5) on response code " << resp_code << ".....scanstring : " << scanstr << " scan_key_limit : " << scan_key_limit << endl;
+            ret = aws_s3_io->scan(scanstr, cont_token, scan_key_limit, resp_code, resp_data);
         }
+
         if (404 == resp_code)
         {
             return NOTFOUND;
@@ -772,18 +609,136 @@ namespace hcm{
         return ret;
     }
 
-    IO_STATUS_CODE AWSio::get(const std::string &key, std::string &output_string)
+    IO_STATUS_CODE AWSio::get(const std::string &key, std::string &output_string, std::map<string, string> &resp_hdrs, int offset, int range)
     {
         int resp_code = 200;
         std::vector<string> list_files;
         IO_STATUS_CODE ret = OK;
-        ret = get(key, output_string, resp_code);
-        if(500 == resp_code)
+        uint retry_count = 0;
+        std::cout << "AWSio::get: " << key << std::endl;
+        ret = aws_s3_io->get(key, output_string, resp_code, resp_hdrs, offset, range);
+        while((500 == resp_code || 520 == resp_code) && retry_count < _MAX_RETRY_COUNT)
         {
-            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying..." << endl;
-            return get(key, output_string, resp_code);
+            usleep( _RETRY_SLEEP_S * 1000 * 1000);
+            retry_count++;
+            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "Retrying ( " << retry_count << " of 5) on response code " << resp_code << "...key : " << key << endl;
+            ret = aws_s3_io->get(key, output_string, resp_code, resp_hdrs, offset, range);
         }
         return ret;
+    }
+
+    /*
+    AWSio::AWSio(Json::Value config, bool secureConnection)
+    {
+        std::string prefix;
+        std::string t_secret_key, t_access_key, t_service, t_host, t_region, t_prefix;
+        t_service = "s3";
+        // cout << config.toStyledString()<<endl;
+        if(!config.isMember("remote_storage"))
+        {
+            cout <<"IO config does not have remote_storage configured..invalid config in AWSio."<<endl;
+            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "exit called" << endl; 
+            //cm_poco_assert(0);
+        }
+
+        if(config["remote_storage"].isMember("bucket") && config["remote_storage"].isMember("region"))
+        {
+            t_host = Poco::toLower(config["remote_storage"]["bucket"].asString())+".s3.amazonaws.com";
+            t_region = Poco::toLower(config["remote_storage"]["region"].asString());
+        }
+        else
+        {
+            cout <<"IO config does not have bucket or region configured ..invalid config in AWSio."<<endl;
+            cout << "[" << __PRETTY_FUNCTION__ << "]: " << "exit called" << endl; 
+            //cm_poco_assert(0);
+        } 
+
+        if(config["remote_storage"].isMember("auth") && config["remote_storage"]["auth"].isMember("secret_access_key") && config["remote_storage"]["auth"].isMember("secret_id"))
+        {
+            t_secret_key = config_decrypt(config["remote_storage"]["auth"]["secret_access_key"].asString());
+            t_access_key = config_decrypt(config["remote_storage"]["auth"]["secret_id"].asString());
+        }
+        else
+        {
+            const char* access_key = std::getenv("AWS_ACCESS_KEY_ID");
+            const char* secret_key = std::getenv("AWS_SECRET_ACCESS_KEY");
+
+            if(!(access_key && secret_key))
+            {
+                cout <<"IO config does not have Keys configured..invalid config in AWSio."<<endl;
+                cout << "[" << __PRETTY_FUNCTION__ << "]: " << "exit called" << endl; 
+                //cm_poco_assert(0);
+            }
+            t_access_key = std::string(access_key);
+            t_secret_key = std::string(secret_key);
+        }
+        if(config["remote_storage"].isMember("prefix"))
+        {
+            prefix = config["remote_storage"]["prefix"].asString();
+            if(prefix.length() > 0)
+            {
+                if(prefix.at(0) != '/')
+                    t_prefix = '/';
+                t_prefix.append(prefix);
+            }
+            else
+            {
+                t_prefix = '/';
+            }
+        }
+        else
+        {
+            t_prefix = '/';
+        }
+
+#if GTEST
+        aws_s3_io = new MockAWSS3io(t_secret_key, t_access_key, t_service, t_host, t_region, t_prefix, secureConnection);
+#else
+        aws_s3_io = new AWSS3io(t_secret_key, t_access_key, t_service, t_host, t_region, t_prefix, secureConnection);
+#endif
+    }
+    */
+
+#if GTEST
+    AWSio::AWSio(MockAWSS3io* paws, bool secureConnection)
+#else
+    AWSio::AWSio(AWSS3io* paws, bool secureConnection)
+#endif
+    {
+        aws_s3_io = paws;
+    }
+
+    AWSio::~AWSio()
+    {
+        delete aws_s3_io;
+    }
+
+    AWSS3io::AWSS3io(const std::string & secret_key, const std::string & access_key, const std::string & service, const std::string & host, const std::string & region, const std::string & prefix, bool secureConnection)
+    {
+        m_secret_key = secret_key;
+        m_access_key = access_key;
+        m_service = service;
+        m_host = host;
+        m_region = region;
+        m_prefix = prefix;
+        m_secureConnection = secureConnection;
+        Poco::URI uri;
+        std::string uri_str{(m_secureConnection ? "https://" : "http://") + m_host};
+        // cout << "base uri : " << uri_str << endl;
+        try
+        {
+            uri = Poco::URI(uri_str);
+        }
+        catch (std::exception& e)
+        {
+            throw std::runtime_error(e.what());
+        }
+        m_network_session = new cm_network_session_t(uri.getHost(), uri.getPort(), m_secureConnection);
+    }
+
+    AWSS3io::~AWSS3io()
+    {
+        delete m_network_session;
     }
 
     AWSio::AWSio(
@@ -796,16 +751,12 @@ namespace hcm{
             bool secureConnection
             )
     {
-        m_service = service;
-        m_host = bucket+"."+service+".amazon.aws.com";
-        m_region = region;
-        m_secret_key = secret_key;
-        m_access_key = access_key;
-        m_prefix =  prefix;
-        m_secureConnection = secureConnection;
+        string host = bucket+"."+service+".amazon.aws.com";
+#if GTEST
+        aws_s3_io = new MockAWSS3io(secret_key, access_key, service, host, region, prefix, secureConnection);
+#else
+        aws_s3_io = new AWSS3io(secret_key, access_key, service, host, region, prefix, secureConnection);
+#endif
     }
 
-    AWSio::~AWSio()
-    {
-    }
 }
