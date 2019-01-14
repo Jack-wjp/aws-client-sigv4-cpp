@@ -125,7 +125,6 @@ namespace hcm {
     class AWSio
     {
         public:
-            AWSio(Json::Value device_io_config, bool secureConnection = true);
 #if GTEST
             AWSio(MockAWSS3io* paws, bool secureConnection);
 #else
