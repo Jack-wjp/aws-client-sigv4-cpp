@@ -15,10 +15,10 @@
 #include <fstream>
 
 using namespace std;
-extern unsigned char certs_civilmaps_pem[];
-extern unsigned int certs_civilmaps_pem_len;
-extern unsigned char private_civilmaps_key_pem[];
-extern unsigned int private_civilmaps_key_pem_len;
+extern unsigned char certificate_pem[];
+extern unsigned int certificate_pem_len;
+extern unsigned char private_certificate_key_pem[];
+extern unsigned int private_certificate_key_pem_len;
 
 class poco_ssl_initializar_t;
 namespace {
@@ -53,17 +53,17 @@ class poco_ssl_initializar_t {
             std::stringstream ss_certs;
             std::stringstream ss_certs_key;
 
-            for(uint i = 0; i < private_civilmaps_key_pem_len; ++i)
+            for(uint i = 0; i < private_certificate_key_pem_len; ++i)
             {
-                ss_certs_key << private_civilmaps_key_pem[i];
+                ss_certs_key << private_certificate_key_pem[i];
             }
             //std::cout << ss_certs_key.str() << endl;
             std::ofstream ostr(pKeyFile);
             Poco::StreamCopier::copyStream(ss_certs_key, ostr);
 
-            for(uint i = 0; i < certs_civilmaps_pem_len; ++i)
+            for(uint i = 0; i < certificate_pem_len; ++i)
             {
-                ss_certs << certs_civilmaps_pem[i];
+                ss_certs << certificate_pem[i];
             }
             //std::cout << ss_certs.str() << endl;
             std::ofstream ostrc(certFile);
@@ -80,8 +80,8 @@ class poco_ssl_initializar_t {
             ssl_initializer_singleton.get();
 
 #if 1
-            const std::string privateKeyFile = "/etc/ssl/private/cm_server_key.pem";
-            const std::string certificateFile = "/etc/ssl/certs/cm_server.pem";
+            const std::string privateKeyFile = "/etc/ssl/private/hcm_server_key.pem";
+            const std::string certificateFile = "/etc/ssl/certs/hcm_server.pem";
             const std::string caLocation = "";
             gen_certs(certificateFile, privateKeyFile);
             Poco::File certPath(certificateFile);
@@ -93,8 +93,8 @@ class poco_ssl_initializar_t {
             Poco::SharedPtr<Poco::Net::InvalidCertificateHandler> ptrServerHandler = new Poco::Net::AcceptCertificateHandler(true);
             Poco::Net::Context::Ptr ptrServerContext = new Poco::Net::Context(Poco::Net::Context::SERVER_USE, privateKeyFile, certificateFile, caLocation, Poco::Net::Context::VERIFY_NONE);
 #else
-            const std::string pKeyFile = "/tmp/cm_server_key.pem";
-            const std::string certsFile = "/tmp/cm_server.pem";
+            const std::string pKeyFile = "/tmp/hcm_server_key.pem";
+            const std::string certsFile = "/tmp/hcm_server.pem";
             const std::string caLocation = "";
             Poco::SharedPtr<Poco::Net::InvalidCertificateHandler> ptrServerHandler = new Poco::Net::AcceptCertificateHandler(true);
             Poco::Net::Context::Ptr ptrServerContext = new Poco::Net::Context(Poco::Net::Context::SERVER_USE, pKeyFile, certsFile, caLocation, Poco::Net::Context::VERIFY_NONE);
