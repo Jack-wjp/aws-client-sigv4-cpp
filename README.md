@@ -1,5 +1,6 @@
 # aws-client-sigv4-cpp
 For this code I have used C++ POCO Library 
+To compile the code you have to install poco library and google test
 
 # C++ implementation of AWS Signatrue V4 for signing API request
 
