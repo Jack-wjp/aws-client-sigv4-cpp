@@ -83,7 +83,7 @@ namespace hcm {
             outputBuffer[i] = hash[i];
         }
 
-        delete c_string;
+        delete [] c_string;
     }
 
     const std::string Signature::hexlify(const unsigned char* digest) {
